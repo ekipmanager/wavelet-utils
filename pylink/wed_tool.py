@@ -90,7 +90,7 @@ class DeviceInterface(object):
         self.status = st.unpack(self.status_pattern, _status)
         self.config = st.unpack(self.config_pattern, _config)
         self.total_logs = self.status[0]
-        self.sample_period = self.config[self.mode * 2 + 1]
+        self.sample_period = 10 * self.config[self.mode * 2 + 1]
 
     def blink(self):
         blink_pattern = "=BBBBB"

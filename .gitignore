@@ -11,3 +11,6 @@ gen
 # Distribution / packaging
 build/
 *.egg-info/
+
+# Log files
+*.log

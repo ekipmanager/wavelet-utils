@@ -107,7 +107,7 @@ class DeviceInterface(object):
         self.requester.file.write("sample_period: " + str(self.sample_period) + '\n')
         self.requester.write_by_handle(self.config_handle, packet)
         while not self.requester.done:
-            if self.requester.log_count % 1000:
+            if self.requester.log_count % 200 == 0:
                 sys.stdout.write("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
                 sys.stdout.flush()
                 if (datetime.now() - start_time).seconds > 30:

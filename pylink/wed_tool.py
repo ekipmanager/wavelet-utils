@@ -98,6 +98,10 @@ class DeviceInterface(object):
         self.requester.write_by_handle(self.config_handle, packet)
 
     def wait_notification(self):
+        if not self.total_logs > 0:
+            print("No logs to download")
+            return
+
         self.requester.max_logs = self.total_logs
         packet = st.pack(self.download_pattern, 6, 1)
         start_time = datetime.now()

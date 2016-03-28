@@ -1,5 +1,5 @@
 from __future__ import print_function
-import sys, time
+import sys, time, re
 import argparse
 from datetime import datetime
 import struct as st
@@ -13,6 +13,14 @@ class Commands():
     STATUS = 0
     BLINK = 1
     DOWNLOAD = 2
+
+printLock = threading.Lock()
+
+
+def safe_print(message):
+    with printLock:
+        sys.stdout.write(message)
+        sys.stdout.flush()
 
 
 class Requester(GATTRequester):
@@ -29,8 +37,7 @@ class Requester(GATTRequester):
         # sys.stdout.flush()
         if self.log_count > self.max_logs:
             if not self.done:
-                sys.stdout.write("Done------------------------- %d\n" % self.log_count)
-                sys.stdout.flush()
+                safe_print("Done------------------------- %d\n" % self.log_count)
                 self.done = True
                 self.wakeup.set()
         logs = convert(data[3:])
@@ -38,7 +45,8 @@ class Requester(GATTRequester):
         self.file.writelines([b.name + ": " + str(b)+'\n' for b in logs])
         # sys.stdout.write("Wrote %d logs to file\n" % len(logs))
         # sys.stdout.flush()
-        self.wakeup.set()
+        if self.log_count % 200 == 0:
+            self.wakeup.set()
 
 
 class DeviceInterface(threading.Thread):
@@ -80,6 +88,9 @@ class DeviceInterface(threading.Thread):
     def stopped(self):
         return self._stop.is_set()
 
+    def is_connected(self):
+        return self.requester.is_connected()
+
     def run(self):
         if self.command == Commands.DOWNLOAD:
             self.wait_notification()
@@ -105,10 +116,12 @@ class DeviceInterface(threading.Thread):
         return None
 
     def connect(self):
-        print("Connecting to MAC address {} ... ".format(self.address))
-        sys.stdout.flush()
+        safe_print("Connecting to MAC address {} .......\n".format(self.address))
         self.requester.connect(True)
-        print("Connected")
+        safe_print("Connected to {}!\n".format(self.address))
+
+    def disconnect(self):
+        self.requester.disconnect()
 
     def read_status(self):
         _status = self.requester.read_by_handle(self.status_handle)[0]
@@ -119,16 +132,20 @@ class DeviceInterface(threading.Thread):
         self.sample_period = 10 * self.config[self.mode * 2 + 1]
 
     def blink(self):
+        if not self.is_connected():
+            return
         blink_pattern = "=BBBBB"
         packet = st.pack(blink_pattern, 5, 4, 6, 1, 5)
         self.requester.write_by_handle(self.config_handle, packet)
 
     def wait_notification(self):
+        if not self.is_connected():
+            return
         if not self.total_logs > 0:
-            print("No logs to download")
+            safe_print("No logs to download\n")
             return
 
-        # self.requester.max_logs = self.total_logs
+        self.requester.max_logs = self.total_logs
         packet = st.pack(self.download_pattern, 6, 1)
         start_time = datetime.now()
         full_fname = self.fname + start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.log' % self.address.replace(':', ''))
@@ -137,38 +154,33 @@ class DeviceInterface(threading.Thread):
         self.requester.file.write("sample_period: " + str(self.sample_period) + '\n')
         self.requester.write_by_handle(self.config_handle, packet)
         while not self.requester.done and not self.stopped:
-            # if self.requester.log_count % 200 == 0:
-            #     sys.stdout.write("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
-            #     sys.stdout.flush()
-            #     if (datetime.now() - start_time).seconds > 30:
-            #         packet = st.pack(self.download_pattern, 6, 0)
-            #         self.requester.write_by_handle(self.config_handle, packet)
-            #         _ = self.requester.read_by_handle(self.config_handle)[0]
-            #         packet = st.pack(self.download_pattern, 6, 1)
-            #         start_time = datetime.now()
-            #         self.requester.write_by_handle(self.config_handle, packet)
+
+            safe_print("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
+            if (datetime.now() - start_time).seconds > 30:
+                packet = st.pack(self.download_pattern, 6, 0)
+                self.requester.write_by_handle(self.config_handle, packet)
+                _ = self.requester.read_by_handle(self.config_handle)[0]
+                packet = st.pack(self.download_pattern, 6, 1)
+                start_time = datetime.now()
+                self.requester.write_by_handle(self.config_handle, packet)
             self.received.clear()
-            # sys.stdout.write("Waiting .... \n")
-            # sys.stdout.flush()
             self.received.wait()
 
-        print("\nDownload Complete")
+        if self.requester.done:
+            safe_print("\nDownload Complete\n")
+        else:
+            safe_print("\nDownload Interrupted\n")
         self.received.clear()
-        sys.stdout.write("Writing Shut UP .... \n")
-        sys.stdout.flush()
+        safe_print("Writing Shut UP ....\n")
         packet = st.pack(self.download_pattern, 6, 0)
         self.requester.write_by_handle(self.config_handle, packet)
-        sys.stdout.write("Waiting for all notifications to get handled .... \n")
-        sys.stdout.flush()
+        safe_print("Waiting for all notifications to get handled ....\n")
         time.sleep(2)
-        sys.stdout.write("Closing File .... \n")
-        sys.stdout.flush()
+        safe_print("Closing File ....\n")
         self.requester.file.close()
-        sys.stdout.write("Disconnecting .... \n")
-        sys.stdout.flush()
+        safe_print("Disconnecting ....\n")
         self.requester.disconnect()
-        sys.stdout.write("Disconnected .... \n")
-        sys.stdout.flush()
+        safe_print("Disconnected ....\n")
 
 
 def main():
@@ -201,6 +213,12 @@ def main():
             print("{:<20} {:<20} ".format(k, v))
 
     elif options.dev_macs:
+        # Check all the mac addresses to be valid
+        mac_format = "[0-9a-f]{2}([-:])[0-9a-f]{2}(\\1[0-9a-f]{2}){4}$"
+        for dev_mac in options.dev_macs:
+            if not re.match(mac_format, dev_mac.lower()):
+                raise ValueError("{} is not a valid MAC address!".format(dev_mac))
+
         devices = []
         if options.blink:
             command = Commands.BLINK
@@ -230,11 +248,18 @@ def main():
             for device in devices:
                 device.start()
 
-        except KeyboardInterrupt:
-            print("Cancelling downloads ....")
+            for device in devices:
+                device.join()
+
+        except (KeyboardInterrupt, SystemExit):
+            safe_print("Cancelling downloads ....\n")
             for device in devices:
                 device.stop()
+            time.sleep(1 * len(devices))
             sys.exit(0)
+
+        print(threading.enumerate())
 
 if __name__ == '__main__':
     main()
+

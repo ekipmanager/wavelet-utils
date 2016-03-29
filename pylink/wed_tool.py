@@ -48,12 +48,13 @@ class Requester(GATTRequester):
 
 
 class DeviceInterface(threading.Thread):
-    def __init__(self, address, command, fname=None):
+    def __init__(self, address, command, fname=None, raw=False):
 
         super(DeviceInterface, self).__init__()
         self.address = address
         self.fname = fname
         self.command = command
+        self.raw = True
 
         self.daemon = True
         self._stop = threading.Event()
@@ -145,21 +146,23 @@ class DeviceInterface(threading.Thread):
 
         self.requester.max_logs = self.total_logs
         self.requester.print_step = self.total_logs // 100
-        packet = st.pack(self.download_pattern, 6, 3)
+        log_bit = 1 if self.raw else 3
+        packet = st.pack(self.download_pattern, 6, log_bit)
         start_time = datetime.now()
         full_fname = self.fname + start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.log' % self.address.replace(':', ''))
         self.requester.file = open(full_fname, 'w+')
+        self.requester.file.write("raw\n" if self.raw else "compressed\n")
         self.requester.file.write("start_time: " + str(start_time) + '\n')
         self.requester.file.write("sample_period: " + str(self.sample_period) + '\n')
         self.requester.write_by_handle(self.config_handle, packet)
         bar = ProgBar(100, width=70)
         while not self.requester.done and not self.stopped:
             # safe_print("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
-            if (datetime.now() - start_time).seconds > 30:
+            if (datetime.now() - start_time).seconds > 45:
                 packet = st.pack(self.download_pattern, 6, 0)
                 self.requester.write_by_handle(self.config_handle, packet)
                 _ = self.requester.read_by_handle(self.config_handle)[0]
-                packet = st.pack(self.download_pattern, 6, 1)
+                packet = st.pack(self.download_pattern, 6, log_bit)
                 start_time = datetime.now()
                 self.requester.write_by_handle(self.config_handle, packet)
             self.received.clear()
@@ -193,6 +196,7 @@ def main():
     parser.add_argument("--blink", dest="blink", help="Blink the red LED of the device", action="store_true")
     parser.add_argument("--download", dest="download", help="Download device log", action="store_true")
     parser.add_argument("--file", dest="fname", help="Path and the basename of the file to save the logs to")
+    parser.add_argument("--raw", dest="raw", help="Download log files instead of compressed ones", action="store_true")
 
     if len(sys.argv) == 1:
         parser.print_help()
@@ -236,7 +240,8 @@ def main():
             for dev_mac in options.dev_macs:
                 device = DeviceInterface(dev_mac,
                                          command=command,
-                                         fname=options.fname)
+                                         fname=options.fname,
+                                         raw=options.raw)
                 devices.append(device)
             for device in devices:
                 try:
@@ -258,8 +263,6 @@ def main():
                 device.stop()
             time.sleep(1 * len(devices))
             sys.exit(0)
-
-        print(threading.enumerate())
 
 if __name__ == '__main__':
     main()

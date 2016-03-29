@@ -5,6 +5,7 @@ from datetime import datetime
 import struct as st
 from gattlib import *
 import threading
+from pyprind import ProgBar
 
 from cutils.sensors.converter import convert, get_log_count
 
@@ -31,7 +32,8 @@ class Requester(GATTRequester):
         self.done = False
         self.max_logs = 50
         self.file = None
-        self.next_print = 200
+        self.next_print = 0
+        self.print_step = 200
 
     def on_notification(self, handle, data):
         self.log_count += get_log_count(data[3:])
@@ -41,7 +43,7 @@ class Requester(GATTRequester):
                 self.wakeup.set()
         self.file.write(data[3:])
         if self.log_count > self.next_print:
-            self.next_print += 200
+            self.next_print += self.print_step
             self.wakeup.set()
 
 
@@ -141,7 +143,8 @@ class DeviceInterface(threading.Thread):
             safe_print("No logs to download\n")
             return
 
-        self.requester.max_logs = 1000#self.total_logs
+        self.requester.max_logs = self.total_logs
+        self.requester.print_step = self.total_logs // 100
         packet = st.pack(self.download_pattern, 6, 3)
         start_time = datetime.now()
         full_fname = self.fname + start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.log' % self.address.replace(':', ''))
@@ -149,8 +152,9 @@ class DeviceInterface(threading.Thread):
         self.requester.file.write("start_time: " + str(start_time) + '\n')
         self.requester.file.write("sample_period: " + str(self.sample_period) + '\n')
         self.requester.write_by_handle(self.config_handle, packet)
+        bar = ProgBar(100, width=70)
         while not self.requester.done and not self.stopped:
-            safe_print("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
+            # safe_print("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
             if (datetime.now() - start_time).seconds > 30:
                 packet = st.pack(self.download_pattern, 6, 0)
                 self.requester.write_by_handle(self.config_handle, packet)
@@ -160,7 +164,9 @@ class DeviceInterface(threading.Thread):
                 self.requester.write_by_handle(self.config_handle, packet)
             self.received.clear()
             self.received.wait()
-
+            bar.update()
+        while bar.cnt < bar.max_iter:
+            bar.update()
         safe_print("\rDownloaded %d logs out of %d" % (self.requester.log_count, self.total_logs))
         if self.requester.done:
             safe_print("\nDownload Complete\n")

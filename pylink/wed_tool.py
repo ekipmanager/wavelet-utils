@@ -6,7 +6,7 @@ import struct as st
 from gattlib import *
 import threading
 
-from cutils.sensors.converter import convert
+from cutils.sensors.converter import convert, get_log_count
 
 
 class Commands():
@@ -31,21 +31,17 @@ class Requester(GATTRequester):
         self.done = False
         self.max_logs = 50
         self.file = None
+        self.next_print = 200
 
     def on_notification(self, handle, data):
-        # sys.stdout.write("Received Notification on handle %d\n" % handle)
-        # sys.stdout.flush()
+        self.log_count += get_log_count(data[3:])
         if self.log_count > self.max_logs:
             if not self.done:
-                safe_print("Done------------------------- %d\n" % self.log_count)
                 self.done = True
                 self.wakeup.set()
-        logs = convert(data[3:])
-        self.log_count += len(logs)
-        self.file.writelines([b.name + ": " + str(b)+'\n' for b in logs])
-        # sys.stdout.write("Wrote %d logs to file\n" % len(logs))
-        # sys.stdout.flush()
-        if self.log_count % 200 == 0:
+        self.file.write(data[3:])
+        if self.log_count > self.next_print:
+            self.next_print += 200
             self.wakeup.set()
 
 
@@ -145,8 +141,8 @@ class DeviceInterface(threading.Thread):
             safe_print("No logs to download\n")
             return
 
-        self.requester.max_logs = self.total_logs
-        packet = st.pack(self.download_pattern, 6, 1)
+        self.requester.max_logs = 1000#self.total_logs
+        packet = st.pack(self.download_pattern, 6, 3)
         start_time = datetime.now()
         full_fname = self.fname + start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.log' % self.address.replace(':', ''))
         self.requester.file = open(full_fname, 'w+')
@@ -154,7 +150,6 @@ class DeviceInterface(threading.Thread):
         self.requester.file.write("sample_period: " + str(self.sample_period) + '\n')
         self.requester.write_by_handle(self.config_handle, packet)
         while not self.requester.done and not self.stopped:
-
             safe_print("\rDownloaded %d logs out of %d " % (self.requester.log_count, self.total_logs))
             if (datetime.now() - start_time).seconds > 30:
                 packet = st.pack(self.download_pattern, 6, 0)
@@ -166,12 +161,13 @@ class DeviceInterface(threading.Thread):
             self.received.clear()
             self.received.wait()
 
+        safe_print("\rDownloaded %d logs out of %d" % (self.requester.log_count, self.total_logs))
         if self.requester.done:
             safe_print("\nDownload Complete\n")
         else:
             safe_print("\nDownload Interrupted\n")
         self.received.clear()
-        safe_print("Writing Shut UP ....\n")
+        safe_print("Stopping device from broadcasting ....\n")
         packet = st.pack(self.download_pattern, 6, 0)
         self.requester.write_by_handle(self.config_handle, packet)
         safe_print("Waiting for all notifications to get handled ....\n")
@@ -218,7 +214,6 @@ def main():
         for dev_mac in options.dev_macs:
             if not re.match(mac_format, dev_mac.lower()):
                 raise ValueError("{} is not a valid MAC address!".format(dev_mac))
-
         devices = []
         if options.blink:
             command = Commands.BLINK

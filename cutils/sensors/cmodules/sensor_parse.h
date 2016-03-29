@@ -2,8 +2,6 @@
 #ifndef SENSOR_PARSE_H
 #define SENSOR_PARSE_H
 
-// Compute the packet length using packet header
-
 #if defined(__GNUC__) || defined(__clang__)
 #ifndef TRUE
 #define TRUE 1
@@ -32,9 +30,15 @@ typedef uint32_t uint32;
 extern "C" {
 #endif
 
-// NOTE: Structs below are byte packed. Integers are little-endian.
 #define WED_TAG_SIZE 4
 #define WED_TAG_BITS 0x1F
+
+
+#define AMERR_INVALID_PARAM          -2 // Invalid input parameter
+#define AMERR_UNPROCESED_INPUT       -3 // Some input not processed due to error
+#define AMERR_INVALID_PACKET         -4 // Invalid or unknown packet
+#define AMERR_INVALID_CMP_PACKET     -5 // Invalid compressed packet
+
 
 typedef enum {
     WED_LOG_TIME,
@@ -75,7 +79,6 @@ typedef struct {
     uint8 data[0];
 } PACKED WEDLogAccelCmp;
 
-// Returns the size of a WEDLogAccelCmp entry.
 static inline uint8 WEDLogAccelCmpSize(void* buf) {
 
     WEDLogAccelCmp* pkt = buf;
@@ -111,7 +114,6 @@ typedef struct {
     uint16 val[3];
 } PACKED WEDLogLSData;
 
-// Returns the size of a WEDLogLSData entry.
 static inline uint8 WEDLogLSDataSize(void* buf) {
     return sizeof(uint8) + (sizeof(uint16) * (
         ((((WEDLogLSData*)buf)->type & 0x80) ? 1 : 0) +
@@ -145,10 +147,27 @@ typedef struct {
     uint8 flags;
 } PACKED WEDLogEvent;
 
+typedef struct _amiigo_accel {
+    int bValid;
+    int accel[3];
+} amiigo_accel_t;
+
+typedef struct _cmp_state {
+    amiigo_accel_t accel;
+    unsigned int ignored_cmp_count;
+} cmp_state_t;
+
+
 #ifdef __cplusplus
 }
 #endif
 
 int get_packet_len(const char * pPayload);
+
+int get_compressed_log_count(const char * pPayload);
+
+int stream_decompress(const char * pInBuf, int * pnInLen, char * pOutBuf, int * pnOutLen, cmp_state_t * pState);
+
+int stream_len(const char * pInBuf, int * pnInLen, int * pnOutLen, const cmp_state_t * pState);
 
 #endif // include guard

@@ -3,6 +3,12 @@ from libc.stdint cimport uint8_t, uint32_t, int8_t, uint16_t, int16_t
 
 cdef extern from "cmodules/sensor_parse.h":
 
+    cdef enum AMERR:
+        AMERR_INVALID_PARAM          = -2
+        AMERR_UNPROCESED_INPUT       = -3
+        AMERR_INVALID_PACKET         = -4
+        AMERR_INVALID_CMP_PACKET     = -5
+
     ctypedef enum WED_LOG_TYPE:
         WED_LOG_TIME        = 0
         WED_LOG_ACCEL       = 1
@@ -63,4 +69,18 @@ cdef extern from "cmodules/sensor_parse.h":
         uint8_t type
         uint8_t flags
 
+    ctypedef struct amiigo_accel_t:
+        int bValid
+        int accel[3]
+
+    ctypedef struct cmp_state_t:
+        amiigo_accel_t accel
+        unsigned int ignored_cmp_count
+
+    int stream_decompress(const char * pInBuf, int * pnInLen, char * pOutBuf, int * pnOutLen, cmp_state_t * pState)
+
+    int stream_len(const char * pInBuf, int * pnInLen, int * pnOutLen, const cmp_state_t * pState)
+
     int get_packet_len(const char * pPayload)
+
+    int get_compressed_log_count(const char * pPayload)

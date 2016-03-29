@@ -1,6 +1,7 @@
 
 from c_converter cimport *
-
+import numpy as np
+cimport numpy as np
 cimport cython
 
 
@@ -483,3 +484,70 @@ def convert(logs_str not None, ignore_unknown=True):
         count = count + packet_len
     return converted
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def get_log_count(logs_str not None, ignore_unknown=True):
+    """
+    Return number of logs in a log stream
+    :param logs_str:      byte stream of logs (compressed or uncompressed)
+    :return:              number of logs in the byte stream
+    """
+
+    if not logs_str:
+        return 0
+
+    data_len = len(logs_str)
+    if data_len < 2:
+        return 0
+
+    cdef char* logs = logs_str
+
+    cdef int count = 0
+    cdef int total_logs = 0
+
+    while count < data_len:
+        packet_len = get_packet_len(<const char *>&logs[count])
+        if count + packet_len > data_len:
+            break
+        pk_type = logs[count] & WED_TAG_BITS
+        if ignore_unknown and (pk_type < 0 or pk_type > WED_LOG_EVENT):
+            break
+        if pk_type == WED_LOG_ACCEL_CMP:
+            total_logs += get_compressed_log_count(<const char *>&logs[count])
+        else:
+            total_logs += 1
+        count = count + packet_len
+    return total_logs
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def decompress_stream(logs not None):
+    '''Decompress stream
+    Inputs:
+        logs - byte stream of logs (potentially compressed)
+    Outputs:
+        outBuf - decompressed byte array
+    '''
+
+    cdef np.uint8_t[:] inBuf
+    inBuf = np.ascontiguousarray(logs, dtype=np.uint8)
+
+    cdef int res
+    cdef int nInLen = len(inBuf)
+    cdef int nOutLen
+    cdef cmp_state_t state
+    state.accel.bValid = 0
+    state.ignored_cmp_count = 0
+    res = stream_len(<const char *>&inBuf[0], &nInLen, &nOutLen, &state)
+    # In case of invalid packet, go ahead and decompress valid ones
+    if res < 0 and res != AMERR_UNPROCESED_INPUT:
+        raise RuntimeError("Invalid stream (%d)" % res)
+    if nInLen == 0:
+        raise RuntimeError("Empty input stream")
+    cdef np.uint8_t[:] outBuf = np.zeros(nOutLen, dtype=np.uint8)
+    if nOutLen > 0:
+        res = stream_decompress(<const char *>&inBuf[0], &nInLen, <char *>&outBuf[0], &nOutLen, &state)
+        if res < 0:
+            raise RuntimeError("Decompression error or invalid packet (%d)" % res)
+
+    return np.asarray(outBuf), nInLen, state.ignored_cmp_count

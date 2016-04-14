@@ -11,6 +11,11 @@ gen
 # Distribution / packaging
 build/
 *.egg-info/
+*.pyc
 
-# Log files
+# Log and Data files
+*logs/
+*data/
+*.dat
 *.log
+

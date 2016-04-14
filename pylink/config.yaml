@@ -1,0 +1,10 @@
+---
+max_process: 3
+devices:
+  - 78:A5:04:17:68:6D
+  - D0:5F:B8:5D:D0:3F
+  - 78:A5:04:17:6E:00
+  - D0:5F:B8:60:FD:7C
+  - D0:5F:B8:60:FC:A1
+raw: false
+log_dir: "./logs"

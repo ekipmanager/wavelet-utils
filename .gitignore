@@ -14,8 +14,6 @@ build/
 *.pyc
 
 # Log and Data files
-*logs/
-*data/
 *.dat
 *.log
 

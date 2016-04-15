@@ -8,6 +8,7 @@ from threading import Event
 
 from cutils.sensors.converter import get_log_count
 from wed_settings import *
+from parsers.log_parse import get_accel_counts
 
 
 class Requester(GATTRequester):
@@ -40,7 +41,10 @@ class DeviceInterface:
                  fname=None,
                  raw=False,
                  wake_up=None,
-                 stop_event=None):
+                 stop_event=None,
+                 battery_warn=20,
+                 status_dict=None,
+                 min_logs=1000):
 
         self.mac_address = mac_address
         self.fname = fname
@@ -55,17 +59,20 @@ class DeviceInterface:
             if not (hasattr(log_stream, 'write') and hasattr(log_stream, 'flush')):
                 raise ValueError("No Valid stream found")
             self.log_stream = log_stream
-
-        self.daemon = True
+        self.battery_warn = battery_warn
 
         if device_settings is None:
             self.device_settings = AmiigoSettings()
         else:
             self.device_settings = device_settings
+        self.status_dict = status_dict
 
         # Initialize configs
         self.status = None
+        self.start_time = None
+        self.full_fname = None
         self.total_logs = 0
+        self.min_logs = min_logs
         self.config = None
         self.sample_period = None
         if stop_event is None:
@@ -84,21 +91,11 @@ class DeviceInterface:
     def stopped(self):
         return self._stop.is_set()
 
+    def stop(self):
+        self._stop.set()
+
     def is_connected(self):
         return self.requester.is_connected()
-
-    def run(self):
-        self.connect()
-        self.read_status()
-
-        if self.command == Commands.DOWNLOAD:
-            self.wait_notification()
-        elif self.command == Commands.BLINK:
-            self.blink()
-        elif self.command == Commands.STATUS:
-            self.print_status()
-
-        self.disconnect()
 
     @property
     def battery_level(self):
@@ -149,51 +146,43 @@ class DeviceInterface:
     def connect(self):
         self.log_print("Connecting to MAC address {} .......".format(self.mac_address))
         with self.backend_lock:
-            try:
-                self.requester.connect(True)
-                self.log_print("Connected to {}!".format(self.mac_address))
-            except Exception, e:
-                self.log_print("Failed to connect to {}\n {}\n".format(self.mac_address, str(e)))
+            self.requester.connect(True)
+            self.log_print("Connected to {}!".format(self.mac_address))
 
     def disconnect(self):
-        self.log_print("Disconnecting ....")
-
-        with self.backend_lock:
-            self.requester.disconnect()
-        self.log_print("Disconnected from {}!".format(self.mac_address))
-
-    def read_by_handle(self, handle):
+        self.log_print("Disconnecting from device {} .....".format(self.mac_address))
         if not self.is_connected():
+            self.log_print("Device {} is already disconnected".format(self.mac_address))
             return
         with self.backend_lock:
-            try:
-                ret = self.requester.read_by_handle(handle)
-            except Exception, e:
-                self.log_print("Failed to read from handle {}\n {}\n".format(handle, str(e)))
-                self.stop()
-                ret = None
+            self.requester.disconnect()
+        self.log_print("Disconnected from device {}!".format(self.mac_address))
+
+    def read_by_handle(self, handle):
+        with self.backend_lock:
+            ret = self.requester.read_by_handle(handle)
         return ret
 
     def write_by_handle(self, handle, data):
         with self.backend_lock:
-            try:
-                self.requester.write_by_handle(handle, data)
-            except Exception, e:
-                self.log_print("Failed to write to handle {}\n {}\n".format(handle, str(e)))
-                self.stop()
+            self.requester.write_by_handle(handle, data)
 
-    def read_status(self):
+    def read_status(self, update=False):
         _status = self.read_by_handle(self.device_settings.status_handle)[0]
-        _config = self.read_by_handle(self.device_settings.config_handle)[0]
         self.status = st.unpack(self.device_settings.status_pattern, _status)
-        self.config = st.unpack(self.device_settings.config_pattern, _config)
-        self.total_logs = self.status[0]
-        self.sample_period = 10 * self.config[self.mode * 2 + 1]
+        if not update:
+            _config = self.read_by_handle(self.device_settings.config_handle)[0]
+            self.config = st.unpack(self.device_settings.config_pattern, _config)
+            self.total_logs = self.status[0]
+            self.sample_period = 10 * self.config[self.mode * 2 + 1]
 
     def print_status(self):
-        status = ["Status of the Device {}:".format(self.mac_address)]
-        status.append("Battery: {}%        Total Logs: {}      Reboots: {}".format(self.battery_level, self.total_logs, self.reboot_count))
-        status.append("Device is running in {} mode with sampling rate: {} ms".format(self.mode_name, self.sample_period))
+        status = ["Status of the Device {}:".format(self.mac_address),
+                  "Battery: {}%      Total Logs: {}      Reboots: {}".format(self.battery_level, self.status[0], self.reboot_count),
+                  "Device is running in {} mode with sampling rate: {} ms".format(self.mode_name, self.sample_period),
+                  ]
+        if self.battery_level < self.battery_warn:
+            status.append("****WARNING: Device {} battery is less than {}".format(self.battery_level, self.battery_warn))
         self.log_print(status)
 
     def blink(self):
@@ -202,54 +191,90 @@ class DeviceInterface:
         packet = st.pack(self.device_settings.blink_pattern, 5, 4, 6, 1, 5)
         self.write_by_handle(self.device_settings.config_handle, packet)
 
-    def wait_notification(self):
+    def start_broadcast(self):
+        log_bit = 1 if self.raw else 3
+        packet = st.pack(self.device_settings.download_pattern, 6, log_bit)
+        self.write_by_handle(self.device_settings.config_handle, packet)
+
+    def stop_broadcast(self):
+        packet = st.pack(self.device_settings.download_pattern, 6, 0)
+        self.write_by_handle(self.device_settings.config_handle, packet)
+
+    def download_data(self):
         if not self.is_connected():
             return
-        if not self.total_logs > 0:
-            self.log_print("No logs to download")
+        if self.total_logs < self.min_logs:
+            self.log_print("Not enough logs to start download, {} logs found but minimum logs is set to {}".
+                           format(self.total_logs, self.min_logs))
             return
 
         self.requester.max_logs = self.total_logs
         self.requester.print_step = self.requester.max_logs // 100
-        log_bit = 1 if self.raw else 3
-        packet = st.pack(self.device_settings.download_pattern, 6, log_bit)
-        start_time = datetime.now()
-        full_fname = self.fname + start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.dat' % self.mac_address.replace(':', ''))
-        self.log_print("Writing data to file: {}".format(full_fname))
-        self.requester.file = open(full_fname, 'w+')
+        self.start_time = datetime.now()
+        self.full_fname = self.fname + self.start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.dat' % self.mac_address.replace(':', ''))
+        self.log_print("Writing data to file: {}".format(self.full_fname))
+        self.requester.file = open(self.full_fname, 'w+')
         self.requester.file.write("raw\n" if self.raw else "compressed\n")
-        self.requester.file.write("start_time: " + str(start_time) + '\n')
+        self.requester.file.write("start_time: " + str(self.start_time) + '\n')
         self.requester.file.write("sample_period: " + str(self.sample_period) + '\n')
-        self.write_by_handle(self.device_settings.config_handle, packet)
+        self.start_broadcast()
         bar = ProgBar(100, width=70, stream=self.log_stream)
+        last_check = self.start_time
+        timed_out = False
         try:
-            while not self.requester.done and not self.stopped:
-                if (datetime.now() - start_time).seconds > 30:
-                    packet = st.pack(self.device_settings.download_pattern, 6, 0)
-                    self.write_by_handle(self.device_settings.config_handle, packet)
-                    _ = self.read_by_handle(self.device_settings.config_handle)[0]
-                    packet = st.pack(self.device_settings.download_pattern, 6, log_bit)
-                    start_time = datetime.now()
-                    self.write_by_handle(self.device_settings.config_handle, packet)
+            while not timed_out and not self.requester.done and not self.stopped:
+                if (datetime.now() - last_check).seconds > 30:
+                    self.stop_broadcast()
+                    self.read_status(update=True)
+                    self.print_status()
+                    last_check = datetime.now()
+                    self.start_broadcast()
                 self.received.clear()
-                self.received.wait()
+                timed_out = not self.received.wait(30)
                 bar.update()
             if self.requester.done:
-                self.log_print("Download Complete")
                 while bar.cnt < bar.max_iter:
                     bar.update()
+                self.log_print("Download Complete")
             else:
+                self.log_print("")
                 self.log_print("Download Interrupted")
+
         except (KeyboardInterrupt, SystemExit):
+            self.log_print("")
             self.log_print("Download Interrupted")
-        except:
-            raise
+
         finally:
             self.received.clear()
-            self.log_print("Stopping device from broadcasting ....")
-            packet = st.pack(self.device_settings.download_pattern, 6, 0)
-            self.write_by_handle(self.device_settings.config_handle, packet)
-            self.log_print("Waiting for all notifications to get handled ....")
-            time.sleep(2)
+            if not timed_out:
+                self.log_print("Stopping device from broadcasting ....")
+                self.stop_broadcast()
+                self.log_print("Waiting for all notifications to get handled ....")
+                time.sleep(2)
             self.log_print("Closing File ....")
             self.requester.file.close()
+
+    def run(self):
+        try:
+            self.connect()
+            self.read_status()
+            if self.command == Commands.DOWNLOAD:
+                self.download_data()
+            elif self.command == Commands.BLINK:
+                self.blink()
+            elif self.command == Commands.STATUS:
+                self.print_status()
+            self.disconnect()
+        except Exception, e:
+            self.log_print("Error encountered while running device {}\n {}\n".format(self.mac_address, str(e)))
+        finally:
+            if self.status_dict is not None and self.command == Commands.DOWNLOAD:
+                if self.requester.log_count > 0:
+                    epoch_time = (self.start_time - datetime(1970, 1, 1)).total_seconds()
+                    if not self.requester.done:
+                        epoch_time -= (self.total_logs - get_accel_counts(self.full_fname)) * self.sample_period / 1000
+                    self.status_dict[self.mac_address] = int(epoch_time)
+                elif self.total_logs < self.min_logs:
+                    epoch_time = (datetime.now() - datetime(1970, 1, 1)).total_seconds()
+                    self.status_dict[self.mac_address] = int(epoch_time)
+

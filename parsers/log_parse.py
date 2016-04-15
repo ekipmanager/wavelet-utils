@@ -29,3 +29,23 @@ def stamp_log_file(fname):
     time_stamps = [start_time - datetime.timedelta(milliseconds=sampling_period * i) for i in range(len(accel_logs))][::-1]
 
     return pd.DataFrame(accel_logs, index=pd.DatetimeIndex(time_stamps), columns=['Ax', 'Ay', 'Az'], dtype=int)
+
+
+def get_accel_counts(fname):
+    with open(fname, 'r') as f:
+        lines = f.readlines()
+
+    if lines[0][:-1] == 'compressed':
+        compressed = True
+    elif lines[0][:-1] == 'raw':
+        compressed = False
+    else:
+        raise NotImplementedError("The time-stamping does not support this type of file")
+
+    log_bytes = ''.join(lines[3:])
+    if compressed:
+        decomp_bytes = decompress_stream(bytearray(log_bytes))[0].tobytes()
+        logs = convert(decomp_bytes)
+    else:
+        logs = convert(log_bytes)
+    return len([l for l in logs if l.name.startswith('accel')])

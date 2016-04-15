@@ -211,7 +211,7 @@ class DeviceInterface:
         self.requester.max_logs = self.total_logs
         self.requester.print_step = self.requester.max_logs // 100
         self.start_time = datetime.now()
-        self.full_fname = self.fname + self.start_time.strftime("_%m-%d-%y_%H-%M-%S") + ('_%s.dat' % self.mac_address.replace(':', ''))
+        self.full_fname = self.fname + '_%s.dat' % self.mac_address.replace(':', '') + self.start_time.strftime("_%m-%d-%y_%H-%M-%S")
         self.log_print("Writing data to file: {}".format(self.full_fname))
         self.requester.file = open(self.full_fname, 'w+')
         self.requester.file.write("raw\n" if self.raw else "compressed\n")

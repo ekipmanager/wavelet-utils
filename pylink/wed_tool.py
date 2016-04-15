@@ -6,7 +6,11 @@ import os
 import argparse
 import signal
 import yaml
-from Queue import PriorityQueue
+
+try:
+    from Queue import PriorityQueue
+except ImportError:
+    from queue import PriorityQueue  # python 3.x
 
 from datetime import datetime
 from multiprocessing import Process, Lock, Event

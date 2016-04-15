@@ -265,7 +265,7 @@ class DeviceInterface:
             elif self.command == Commands.STATUS:
                 self.print_status()
             self.disconnect()
-        except Exception, e:
+        except (Exception) as e:
             self.log_print("Error encountered while running device {}\n {}\n".format(self.mac_address, str(e)))
         finally:
             if self.status_dict is not None and self.command == Commands.DOWNLOAD:
